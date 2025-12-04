@@ -100,6 +100,33 @@ class MujocoRosNode(Node):
                 # This is a simplification; robust logic would check trnid
                 pass
 
+    def _quat_rotate(self, quat, vec):
+        """Rotate a vector by a quaternion: q * v * q^-1
+        
+        Args:
+            quat: Quaternion [w, x, y, z]
+            vec: Vector [x, y, z]
+        
+        Returns:
+            Rotated vector [x, y, z]
+        """
+        # Extract quaternion components
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+        vx, vy, vz = vec[0], vec[1], vec[2]
+        
+        # Quaternion-vector multiplication (optimized formula)
+        # t = 2 * cross(q.xyz, v)
+        tx = 2.0 * (y * vz - z * vy)
+        ty = 2.0 * (z * vx - x * vz)
+        tz = 2.0 * (x * vy - y * vx)
+        
+        # result = v + w * t + cross(q.xyz, t)
+        return np.array([
+            vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx)
+        ])
+
     def _cmd_callback(self, msg):
         with self.cmd_mutex:
             if len(msg.position) > 0:
@@ -255,14 +282,24 @@ class MujocoRosNode(Node):
             odom.pose.pose.orientation.y = quat[2]
             odom.pose.pose.orientation.z = quat[3]
             
-            # Twist (requires qvel mapping to body velocity - simplified here)
-            # mj_objectVelocity would be better but for free joint root:
-            odom.twist.twist.linear.x = self.data.qvel[0]
-            odom.twist.twist.linear.y = self.data.qvel[1]
-            odom.twist.twist.linear.z = self.data.qvel[2]
-            odom.twist.twist.angular.x = self.data.qvel[3]
-            odom.twist.twist.angular.y = self.data.qvel[4]
-            odom.twist.twist.angular.z = self.data.qvel[5]
+            # Transform world-frame velocity to body-frame
+            # qvel[0:3] is linear velocity in WORLD frame
+            # qvel[3:6] is angular velocity in WORLD frame
+            lin_vel_world = np.array([self.data.qvel[0], self.data.qvel[1], self.data.qvel[2]])
+            ang_vel_world = np.array([self.data.qvel[3], self.data.qvel[4], self.data.qvel[5]])
+            
+            # Rotate world velocity to body frame using quaternion inverse
+            # quat is [w, x, y, z], need to rotate by conjugate (inverse)
+            quat_conj = np.array([quat[0], -quat[1], -quat[2], -quat[3]])
+            lin_vel_body = self._quat_rotate(quat_conj, lin_vel_world)
+            ang_vel_body = self._quat_rotate(quat_conj, ang_vel_world)
+            
+            odom.twist.twist.linear.x = lin_vel_body[0]
+            odom.twist.twist.linear.y = lin_vel_body[1]
+            odom.twist.twist.linear.z = lin_vel_body[2]
+            odom.twist.twist.angular.x = ang_vel_body[0]
+            odom.twist.twist.angular.y = ang_vel_body[1]
+            odom.twist.twist.angular.z = ang_vel_body[2]
             
             self.pub_odom.publish(odom)
 
