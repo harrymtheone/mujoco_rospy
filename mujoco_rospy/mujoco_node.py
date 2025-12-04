@@ -214,19 +214,22 @@ class MujocoRosNode(Node):
         imu.header.stamp = now
         imu.header.frame_id = "base_link"
         
-        # Orientation (Quaternion)
-        # Look for 'imu_quat' sensor
-        id_quat = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")
+        # Check imu_site exists first (required for odometry too)
         id_site = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "imu_site")
+        if id_site < 0:
+            raise ValueError("Site 'imu_site' not found in model")
         
-        if id_quat >= 0 and id_site >= 0:
+        # Orientation (Quaternion)
+        id_quat = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")
+        
+        if id_quat >= 0:
             adr = self.model.sensor_adr[id_quat]
             imu.orientation.w = self.data.sensordata[adr]
             imu.orientation.x = self.data.sensordata[adr+1]
             imu.orientation.y = self.data.sensordata[adr+2]
             imu.orientation.z = self.data.sensordata[adr+3]
-        elif id_site >= 0:
-            # Fallback to site orientation if "imu_site" exists
+        else:
+            # Fallback to site orientation
             mat = self.data.site_xmat[id_site].reshape(3, 3)
             quat = np.zeros(4)
             mujoco.mju_mat2Quat(quat, mat.flatten())
@@ -234,8 +237,6 @@ class MujocoRosNode(Node):
             imu.orientation.x = quat[1]
             imu.orientation.y = quat[2]
             imu.orientation.z = quat[3]
-        else:
-            raise ValueError("IMU Orientation sensor 'imu_quat' or site 'imu_site' not found in model")
 
         # Gyro
         id_gyro = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
@@ -254,55 +255,52 @@ class MujocoRosNode(Node):
             imu.linear_acceleration.x = self.data.sensordata[adr]
             imu.linear_acceleration.y = self.data.sensordata[adr+1]
             imu.linear_acceleration.z = self.data.sensordata[adr+2]
-                
+        else:
+            raise ValueError("IMU Accel sensor 'imu_accel' not found in model")
+            
         self.pub_imu.publish(imu)
         
-        # 3. Odometry
-        # Using 'imu_site' for odometry position
-        id_site = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "imu_site")
+        # 3. Odometry (id_site already checked above)
+        odom = Odometry()
+        odom.header.stamp = now
+        odom.header.frame_id = "odom"
+        odom.child_frame_id = "base_link"
         
-        if id_site >= 0:
-            odom = Odometry()
-            odom.header.stamp = now
-            odom.header.frame_id = "odom"
-            odom.child_frame_id = "base_link"
-            
-            # Position from imu_site
-            odom.pose.pose.position.x = self.data.site_xpos[id_site][0]
-            odom.pose.pose.position.y = self.data.site_xpos[id_site][1]
-            odom.pose.pose.position.z = self.data.site_xpos[id_site][2]
-            
-            # Orientation from imu_site (site_xmat to quat)
-            mat = self.data.site_xmat[id_site].reshape(3, 3)
-            quat = np.zeros(4)
-            mujoco.mju_mat2Quat(quat, mat.flatten())
-            
-            odom.pose.pose.orientation.w = quat[0]
-            odom.pose.pose.orientation.x = quat[1]
-            odom.pose.pose.orientation.y = quat[2]
-            odom.pose.pose.orientation.z = quat[3]
-            
-            # Transform world-frame velocity to body-frame
-            # qvel[0:3] is linear velocity in WORLD frame
-            # qvel[3:6] is angular velocity in WORLD frame
-            lin_vel_world = np.array([self.data.qvel[0], self.data.qvel[1], self.data.qvel[2]])
-            ang_vel_world = np.array([self.data.qvel[3], self.data.qvel[4], self.data.qvel[5]])
-            
-            # Rotate world velocity to body frame using quaternion inverse
-            # quat is [w, x, y, z], need to rotate by conjugate (inverse)
-            quat_conj = np.array([quat[0], -quat[1], -quat[2], -quat[3]])
-            lin_vel_body = self._quat_rotate(quat_conj, lin_vel_world)
-            ang_vel_body = self._quat_rotate(quat_conj, ang_vel_world)
-            
-            odom.twist.twist.linear.x = lin_vel_body[0]
-            odom.twist.twist.linear.y = lin_vel_body[1]
-            odom.twist.twist.linear.z = lin_vel_body[2]
-            odom.twist.twist.angular.x = ang_vel_body[0]
-            odom.twist.twist.angular.y = ang_vel_body[1]
-            odom.twist.twist.angular.z = ang_vel_body[2]
-            
-            self.pub_odom.publish(odom)
-
+        # Position from imu_site
+        odom.pose.pose.position.x = self.data.site_xpos[id_site][0]
+        odom.pose.pose.position.y = self.data.site_xpos[id_site][1]
+        odom.pose.pose.position.z = self.data.site_xpos[id_site][2]
+        
+        # Orientation from imu_site (site_xmat to quat)
+        mat = self.data.site_xmat[id_site].reshape(3, 3)
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, mat.flatten())
+        
+        odom.pose.pose.orientation.w = quat[0]
+        odom.pose.pose.orientation.x = quat[1]
+        odom.pose.pose.orientation.y = quat[2]
+        odom.pose.pose.orientation.z = quat[3]
+        
+        # Transform world-frame velocity to body-frame
+        # qvel[0:3] is linear velocity in WORLD frame
+        # qvel[3:6] is angular velocity in WORLD frame
+        lin_vel_world = np.array([self.data.qvel[0], self.data.qvel[1], self.data.qvel[2]])
+        ang_vel_world = np.array([self.data.qvel[3], self.data.qvel[4], self.data.qvel[5]])
+        
+        # Rotate world velocity to body frame using quaternion inverse
+        # quat is [w, x, y, z], need to rotate by conjugate (inverse)
+        quat_conj = np.array([quat[0], -quat[1], -quat[2], -quat[3]])
+        lin_vel_body = self._quat_rotate(quat_conj, lin_vel_world)
+        ang_vel_body = self._quat_rotate(quat_conj, ang_vel_world)
+        
+        odom.twist.twist.linear.x = lin_vel_body[0]
+        odom.twist.twist.linear.y = lin_vel_body[1]
+        odom.twist.twist.linear.z = lin_vel_body[2]
+        odom.twist.twist.angular.x = ang_vel_body[0]
+        odom.twist.twist.angular.y = ang_vel_body[1]
+        odom.twist.twist.angular.z = ang_vel_body[2]
+        
+        self.pub_odom.publish(odom)
 
     def _sim_loop(self):
         
