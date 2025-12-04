@@ -97,10 +97,17 @@ class MujocoRosNode(Node):
             name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
             if name:
                 self.actuator_map[name] = i
-            else:
-                # Try to find by joint name if actuator is unnamed but attached to joint
-                # This is a simplification; robust logic would check trnid
-                pass
+        
+        # Map joint name to actuator index (for joints with actuators)
+        self.joint_to_actuator = {}
+        for i in range(self.model.nu):
+            if self.model.actuator_trntype[i] == mujoco.mjtTrn.mjTRN_JOINT:
+                joint_id = self.model.actuator_trnid[i, 0]
+                joint_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+                if joint_name:
+                    self.joint_to_actuator[joint_name] = i
+        
+        self.get_logger().info(f"Built joint->actuator mapping for {len(self.joint_to_actuator)} joints")
 
     def _quat_rotate(self, quat, vec):
         """Rotate a vector by a quaternion: q * v * q^-1
@@ -131,16 +138,33 @@ class MujocoRosNode(Node):
 
     def _cmd_callback(self, msg):
         with self.cmd_mutex:
-            if len(msg.position) > 0:
-                self.target_pos[:len(msg.position)] = msg.position
-            if len(msg.velocity) > 0:
-                self.target_vel[:len(msg.velocity)] = msg.velocity
-            if len(msg.torque) > 0:
-                self.target_tau[:len(msg.torque)] = msg.torque
-            if len(msg.kp) > 0:
-                self.kp[:len(msg.kp)] = msg.kp
-            if len(msg.kd) > 0:
-                self.kd[:len(msg.kd)] = msg.kd
+            # If joint names are provided, use name-based mapping
+            if len(msg.name) > 0:
+                for i, joint_name in enumerate(msg.name):
+                    if joint_name in self.joint_to_actuator:
+                        act_idx = self.joint_to_actuator[joint_name]
+                        if i < len(msg.position):
+                            self.target_pos[act_idx] = msg.position[i]
+                        if i < len(msg.velocity):
+                            self.target_vel[act_idx] = msg.velocity[i]
+                        if i < len(msg.torque):
+                            self.target_tau[act_idx] = msg.torque[i]
+                        if i < len(msg.kp):
+                            self.kp[act_idx] = msg.kp[i]
+                        if i < len(msg.kd):
+                            self.kd[act_idx] = msg.kd[i]
+            else:
+                # Fallback to direct indexing (legacy behavior)
+                if len(msg.position) > 0:
+                    self.target_pos[:len(msg.position)] = msg.position
+                if len(msg.velocity) > 0:
+                    self.target_vel[:len(msg.velocity)] = msg.velocity
+                if len(msg.torque) > 0:
+                    self.target_tau[:len(msg.torque)] = msg.torque
+                if len(msg.kp) > 0:
+                    self.kp[:len(msg.kp)] = msg.kp
+                if len(msg.kd) > 0:
+                    self.kd[:len(msg.kd)] = msg.kd
 
     def _reset_callback(self, request, response):
         self.reset_request = True
