@@ -12,7 +12,9 @@
   <depend>nav_msgs</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>mujoco_ros</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
+  <depend>mujoco_ros_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -23,4 +25,3 @@
     <build_type>ament_python</build_type>
   </export>
 </package>
-

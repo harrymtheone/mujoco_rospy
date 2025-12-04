@@ -6,19 +6,12 @@ import mujoco.viewer
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
 
 from sensor_msgs.msg import JointState, Imu
 from nav_msgs.msg import Odometry
 from std_srvs.srv import Empty, SetBool
-from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
-
-try:
-    from mujoco_ros.msg import JointControlCmd
-except ImportError:
-    # Fallback if msg not available in python path yet, though typically it should be if sourced
-    JointControlCmd = None
+from mujoco_ros_msgs.msg import JointControlCmd
 
 class MujocoRosNode(Node):
     def __init__(self):
@@ -27,11 +20,11 @@ class MujocoRosNode(Node):
         # Parameters
         self.declare_parameter('model_path', '')
         self.declare_parameter('publish_rate', 500.0)
-        self.declare_parameter('use_viewer', True)
+        self.declare_parameter('headless', False)
         
         self.model_path = self.get_parameter('model_path').value
         self.publish_rate = self.get_parameter('publish_rate').value
-        self.use_viewer = self.get_parameter('use_viewer').value
+        self.headless = self.get_parameter('headless').value
 
         if not self.model_path:
             self.get_logger().error('model_path parameter is required')
@@ -74,11 +67,8 @@ class MujocoRosNode(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         # Subscriber
-        if JointControlCmd:
-            self.sub_cmd = self.create_subscription(
-                JointControlCmd, '/mujoco/joint_cmd', self._cmd_callback, 10)
-        else:
-            self.get_logger().error("JointControlCmd message type not found! Command interface disabled.")
+        self.sub_cmd = self.create_subscription(
+            JointControlCmd, '/mujoco/joint_cmd', self._cmd_callback, 10)
 
         # Services
         self.srv_reset = self.create_service(Empty, '/mujoco/reset', self._reset_callback)
@@ -192,77 +182,78 @@ class MujocoRosNode(Node):
         
         # 2. IMU
         # Assumes site names "imu_site" or sensors "imu_quat", "imu_gyro", "imu_accel"
-        # We will try to read from sensors if available, else data.site_xmat
         
         imu = Imu()
         imu.header.stamp = now
         imu.header.frame_id = "base_link"
         
-        # Naive sensor lookup by name
-        try:
-            # Orientation (Quaternion)
-            # Look for 'imu_quat' sensor
-            id_quat = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")
-            if id_quat >= 0:
-                adr = self.model.sensor_adr[id_quat]
-                imu.orientation.w = self.data.sensordata[adr]
-                imu.orientation.x = self.data.sensordata[adr+1]
-                imu.orientation.y = self.data.sensordata[adr+2]
-                imu.orientation.z = self.data.sensordata[adr+3]
-            else:
-                # Fallback to site orientation if "imu_site" exists
-                id_site = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "imu_site")
-                if id_site >= 0:
-                    mat = self.data.site_xmat[id_site].reshape(3, 3)
-                    quat = np.zeros(4)
-                    mujoco.mju_mat2Quat(quat, mat.flatten())
-                    imu.orientation.w = quat[0]
-                    imu.orientation.x = quat[1]
-                    imu.orientation.y = quat[2]
-                    imu.orientation.z = quat[3]
+        # Orientation (Quaternion)
+        # Look for 'imu_quat' sensor
+        id_quat = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")
+        id_site = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "imu_site")
+        
+        if id_quat >= 0 and id_site >= 0:
+            adr = self.model.sensor_adr[id_quat]
+            imu.orientation.w = self.data.sensordata[adr]
+            imu.orientation.x = self.data.sensordata[adr+1]
+            imu.orientation.y = self.data.sensordata[adr+2]
+            imu.orientation.z = self.data.sensordata[adr+3]
+        elif id_site >= 0:
+            # Fallback to site orientation if "imu_site" exists
+            mat = self.data.site_xmat[id_site].reshape(3, 3)
+            quat = np.zeros(4)
+            mujoco.mju_mat2Quat(quat, mat.flatten())
+            imu.orientation.w = quat[0]
+            imu.orientation.x = quat[1]
+            imu.orientation.y = quat[2]
+            imu.orientation.z = quat[3]
+        else:
+            raise ValueError("IMU Orientation sensor 'imu_quat' or site 'imu_site' not found in model")
 
-            # Gyro
-            id_gyro = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
-            if id_gyro >= 0:
-                adr = self.model.sensor_adr[id_gyro]
-                imu.angular_velocity.x = self.data.sensordata[adr]
-                imu.angular_velocity.y = self.data.sensordata[adr+1]
-                imu.angular_velocity.z = self.data.sensordata[adr+2]
+        # Gyro
+        id_gyro = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
+        if id_gyro >= 0:
+            adr = self.model.sensor_adr[id_gyro]
+            imu.angular_velocity.x = self.data.sensordata[adr]
+            imu.angular_velocity.y = self.data.sensordata[adr+1]
+            imu.angular_velocity.z = self.data.sensordata[adr+2]
+        else:
+            raise ValueError("IMU Gyro sensor 'imu_gyro' not found in model")
 
-            # Accel
-            id_accel = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_accel")
-            if id_accel >= 0:
-                adr = self.model.sensor_adr[id_accel]
-                imu.linear_acceleration.x = self.data.sensordata[adr]
-                imu.linear_acceleration.y = self.data.sensordata[adr+1]
-                imu.linear_acceleration.z = self.data.sensordata[adr+2]
+        # Accel
+        id_accel = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_accel")
+        if id_accel >= 0:
+            adr = self.model.sensor_adr[id_accel]
+            imu.linear_acceleration.x = self.data.sensordata[adr]
+            imu.linear_acceleration.y = self.data.sensordata[adr+1]
+            imu.linear_acceleration.z = self.data.sensordata[adr+2]
                 
-        except Exception as e:
-            # self.get_logger().warn(f"IMU publish error: {e}")
-            pass
-            
         self.pub_imu.publish(imu)
         
         # 3. Odometry
-        # Assuming 'Trunk' or 'base_link' body
-        base_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
-        if base_id < 0:
-            base_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Trunk")
-            
-        if base_id >= 0:
+        # Using 'imu_site' for odometry position
+        id_site = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "imu_site")
+        
+        if id_site >= 0:
             odom = Odometry()
             odom.header.stamp = now
             odom.header.frame_id = "odom"
             odom.child_frame_id = "base_link"
             
-            odom.pose.pose.position.x = self.data.xpos[base_id][0]
-            odom.pose.pose.position.y = self.data.xpos[base_id][1]
-            odom.pose.pose.position.z = self.data.xpos[base_id][2]
+            # Position from imu_site
+            odom.pose.pose.position.x = self.data.site_xpos[id_site][0]
+            odom.pose.pose.position.y = self.data.site_xpos[id_site][1]
+            odom.pose.pose.position.z = self.data.site_xpos[id_site][2]
             
-            odom.pose.pose.orientation.w = self.data.xquat[base_id][0]
-            odom.pose.pose.orientation.x = self.data.xquat[base_id][1]
-            odom.pose.pose.orientation.y = self.data.xquat[base_id][2]
-            odom.pose.pose.orientation.z = self.data.xquat[base_id][3]
+            # Orientation from imu_site (site_xmat to quat)
+            mat = self.data.site_xmat[id_site].reshape(3, 3)
+            quat = np.zeros(4)
+            mujoco.mju_mat2Quat(quat, mat.flatten())
+            
+            odom.pose.pose.orientation.w = quat[0]
+            odom.pose.pose.orientation.x = quat[1]
+            odom.pose.pose.orientation.y = quat[2]
+            odom.pose.pose.orientation.z = quat[3]
             
             # Twist (requires qvel mapping to body velocity - simplified here)
             # mj_objectVelocity would be better but for free joint root:
@@ -289,7 +280,7 @@ class MujocoRosNode(Node):
                 mujoco.mj_step(model, data)
 
         # Viewer wrapper
-        if self.use_viewer:
+        if not self.headless:
             with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
                 self._run_loop(viewer, physics_step)
         else:
@@ -341,4 +332,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
