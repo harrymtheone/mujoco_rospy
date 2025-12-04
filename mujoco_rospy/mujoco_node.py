@@ -21,10 +21,12 @@ class MujocoRosNode(Node):
         self.declare_parameter('model_path', '')
         self.declare_parameter('publish_rate', 500.0)
         self.declare_parameter('headless', False)
+        self.declare_parameter('render_rate', 60.0)  # Default to 60 FPS instead of 30
         
         self.model_path = self.get_parameter('model_path').value
         self.publish_rate = self.get_parameter('publish_rate').value
         self.headless = self.get_parameter('headless').value
+        self.render_rate = self.get_parameter('render_rate').value
 
         if not self.model_path:
             self.get_logger().error('model_path parameter is required')
@@ -316,20 +318,29 @@ class MujocoRosNode(Node):
     def _run_loop(self, viewer, physics_step):
         target_dt = self.model.opt.timestep
         last_pub_time = 0
-        last_render_time = 0
-        render_dt = 1.0 / 30.0  # Cap rendering at 30 FPS
-        
+        render_dt = 1.0 / self.render_rate if self.render_rate > 0 else 0
+        next_render_time = time.time()  # Target time for next render
+
         while self.sim_running:
             step_start = time.time()
 
             # Step physics
             physics_step(self.model, self.data)
             
-            # Sync viewer if needed (throttled)
+            # Sync viewer if needed (throttled or unlimited)
             if viewer and viewer.is_running():
-                if time.time() - last_render_time >= render_dt:
+                current_time = time.time()
+                should_render = (self.render_rate <= 0) or (current_time >= next_render_time)
+                if should_render:
                     viewer.sync()
-                    last_render_time = time.time()
+
+                    # Schedule next render at fixed interval from target (not from now)
+                    # This maintains accurate frame rate regardless of sync() duration
+                    if self.render_rate > 0:
+                        next_render_time += render_dt
+                        # If we've fallen behind (missed frames), catch up to current time
+                        if next_render_time < current_time:
+                            next_render_time = current_time + render_dt
             
             # Publish state (throttled)
             # Using simulation time or wall time? Simulation time is better for ROS
