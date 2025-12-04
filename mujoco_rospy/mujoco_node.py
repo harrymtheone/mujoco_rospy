@@ -209,7 +209,6 @@ class MujocoRosNode(Node):
         
         # 2. IMU
         # Assumes site names "imu_site" or sensors "imu_quat", "imu_gyro", "imu_accel"
-        
         imu = Imu()
         imu.header.stamp = now
         imu.header.frame_id = "base_link"
@@ -221,7 +220,7 @@ class MujocoRosNode(Node):
         
         # Orientation (Quaternion)
         id_quat = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")
-        
+    
         if id_quat >= 0:
             adr = self.model.sensor_adr[id_quat]
             imu.orientation.w = self.data.sensordata[adr]
@@ -229,14 +228,7 @@ class MujocoRosNode(Node):
             imu.orientation.y = self.data.sensordata[adr+2]
             imu.orientation.z = self.data.sensordata[adr+3]
         else:
-            # Fallback to site orientation
-            mat = self.data.site_xmat[id_site].reshape(3, 3)
-            quat = np.zeros(4)
-            mujoco.mju_mat2Quat(quat, mat.flatten())
-            imu.orientation.w = quat[0]
-            imu.orientation.x = quat[1]
-            imu.orientation.y = quat[2]
-            imu.orientation.z = quat[3]
+            raise ValueError("IMU Quat sensor 'imu_quat' not found in model")
 
         # Gyro
         id_gyro = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
@@ -265,7 +257,7 @@ class MujocoRosNode(Node):
         odom.header.stamp = now
         odom.header.frame_id = "odom"
         odom.child_frame_id = "base_link"
-        
+            
         # Position from imu_site
         odom.pose.pose.position.x = self.data.site_xpos[id_site][0]
         odom.pose.pose.position.y = self.data.site_xpos[id_site][1]
@@ -275,12 +267,12 @@ class MujocoRosNode(Node):
         mat = self.data.site_xmat[id_site].reshape(3, 3)
         quat = np.zeros(4)
         mujoco.mju_mat2Quat(quat, mat.flatten())
-        
+            
         odom.pose.pose.orientation.w = quat[0]
         odom.pose.pose.orientation.x = quat[1]
         odom.pose.pose.orientation.y = quat[2]
         odom.pose.pose.orientation.z = quat[3]
-        
+            
         # Transform world-frame velocity to body-frame
         # qvel[0:3] is linear velocity in WORLD frame
         # qvel[3:6] is angular velocity in WORLD frame
@@ -299,7 +291,7 @@ class MujocoRosNode(Node):
         odom.twist.twist.angular.x = ang_vel_body[0]
         odom.twist.twist.angular.y = ang_vel_body[1]
         odom.twist.twist.angular.z = ang_vel_body[2]
-        
+            
         self.pub_odom.publish(odom)
 
     def _sim_loop(self):
