@@ -390,7 +390,8 @@ def main(args=None):
         node.sim_running = False
         node.sim_thread.join()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
